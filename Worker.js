@@ -48,6 +48,9 @@ const MIN_IDR_RESERVE = 400000;
 const MIN_DGB_RESERVE = 2500;
 const INVENTORY_BIAS_TOLERANCE = 0.05;
 
+// ================= VOLUME CONFIRMATION SETTINGS =================
+const MIN_VOLUME_24H_IDR = 1000000; // Minimum 24h volume in IDR for pair
+
 // ================= AUTO INVENTORY TARGET SETTINGS =================
 const AUTO_TARGET_MAX_RATIO = 0.86; // level harga terendah
 const AUTO_TARGET_MIN_RATIO = 0.14; // level harga tertinggi
@@ -1186,7 +1189,7 @@ async function runOnce(env, chatId, forceMsg) {
       sellReplaced: 0,
       biasChanged: false
     };
-    let placeResult = { buyPlaced: 0, sellPlaced: 0, buySkipped: 0, sellSkipped: 0, buySkippedInventory: 0, sellSkippedInventory: 0 };
+    let placeResult = { buyPlaced: 0, sellPlaced: 0, buySkipped: 0, sellSkipped: 0, buySkippedInventory: 0, sellSkippedInventory: 0, buySkippedVolume: 0, sellSkippedVolume: 0 };
 
     if (tradingActive && st.autoGridEnabled) {
       cancelResult = await autoCancelFarOrders(env, st, lastR, nonceCtx, marketState, cfg);
@@ -1296,7 +1299,8 @@ async function runOnce(env, chatId, forceMsg) {
         `Rebalance   : biasChanged=${rebalanceResult.biasChanged ? "YES" : "NO"}, buy=${rebalanceResult.buyReplaced}, sell=${rebalanceResult.sellReplaced}\n` +
         `Auto Place  : buy=${placeResult.buyPlaced}, sell=${placeResult.sellPlaced}, skippedBuy=${placeResult.buySkipped}, skippedSell=${placeResult.sellSkipped}\n` +
         `Inventory Skip: buy=${placeResult.buySkippedInventory}, sell=${placeResult.sellSkippedInventory}\n` +
-        `• Keterangan : pembelian/sale dapat di-skip saat inventory sudah di atas/bawah target\n\n` +
+        `Volume Skip    : buy=${placeResult.buySkippedVolume}, sell=${placeResult.sellSkippedVolume}\n` +
+        `• Keterangan : pembelian/sale dapat di-skip saat inventory sudah di atas/bawah target atau volume rendah\n\n` +
         `manualStopped  : ${st.manualStopped ? "YES ⛔" : "NO"}\n` +
         `TRADING_ENABLED(env): ${envEnabled ? "true" : "false"}\n` +
         `Trading Active : ${tradingActive ? "YES ✅" : "NO ⛔"}\n\n` +
@@ -1830,6 +1834,8 @@ async function autoGenerateOrders(env, st, last, idrFreeStart, dgbFreeStart, bia
   let sellSkipped = 0;
   let buySkippedInventory = 0;
   let sellSkippedInventory = 0;
+  let buySkippedVolume = 0;
+  let sellSkippedVolume = 0;
 
   const maxNewBuy = isSideways ? MICRO_MAX_NEW_BUY_PER_RUN : MAX_NEW_BUY_PER_RUN;
   const maxNewSell = isSideways ? MICRO_MAX_NEW_SELL_PER_RUN : MAX_NEW_SELL_PER_RUN;
@@ -1861,6 +1867,14 @@ async function autoGenerateOrders(env, st, last, idrFreeStart, dgbFreeStart, bia
     if (isSideways && bias === "SELL" && coinRatio > targetCoinRatio + INVENTORY_BIAS_TOLERANCE) {
       buySkipped++;
       buySkippedInventory++;
+      continue;
+    }
+
+    // Volume confirmation
+    const volume24h = await getVolume24h(GRID_PAIR_PUBLIC);
+    if (volume24h < MIN_VOLUME_24H_IDR) {
+      buySkipped++;
+      buySkippedVolume++;
       continue;
     }
 
@@ -1911,6 +1925,14 @@ async function autoGenerateOrders(env, st, last, idrFreeStart, dgbFreeStart, bia
       continue;
     }
 
+    // Volume confirmation
+    const volume24hSell = await getVolume24h(GRID_PAIR_PUBLIC);
+    if (volume24hSell < MIN_VOLUME_24H_IDR) {
+      sellSkipped++;
+      sellSkippedVolume++;
+      continue;
+    }
+
     const target = dynamicSellTargetAdaptive(price, bias, marketState);
     const qty = calcSellQty(price, target);
 
@@ -1934,7 +1956,7 @@ async function autoGenerateOrders(env, st, last, idrFreeStart, dgbFreeStart, bia
     }
   }
 
-  return { buyPlaced, sellPlaced, buySkipped, sellSkipped, buySkippedInventory, sellSkippedInventory };
+  return { buyPlaced, sellPlaced, buySkipped, sellSkipped, buySkippedInventory, sellSkippedInventory, buySkippedVolume, sellSkippedVolume };
 }
 
 // ================= HELPERS =================
@@ -2092,6 +2114,17 @@ async function getTrades(pair) {
   const trades = await fetch(url).then(r => r.json());
   if (!Array.isArray(trades)) return null;
   return trades;
+}
+
+async function getVolume24h(pair) {
+  try {
+    const url = `https://indodax.com/api/ticker/${pair.toLowerCase()}`;
+    const data = await fetch(url).then(r => r.json());
+    if (data && data.ticker && data.ticker.vol_idr) {
+      return Number(data.ticker.vol_idr);
+    }
+  } catch {}
+  return 0;
 }
 
 // ================= STATE =================
