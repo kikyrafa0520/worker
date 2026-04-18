@@ -77,24 +77,35 @@ const MICRO_SIZE_FACTOR = 0.65;
 const MICRO_MIN_SPREAD_PCT = 0.018;
 
 // pair static tetap dipakai untuk manual mode / seed / lock compatibility
-const PAIRS = [
-  [40,42],[42,44],[44,46],[46,48],[48,50],[50,52],[52,54],
-  [54,56],[56,58],[58,60],[60,62],[62,64],[64,66],[66,68],[68,70],[70,72],
-  [72,74],[74,76],[76,78],[78,80],[80,82],[82,84],[84,87],[86,89],[88,91],
-  [90,93],[92,95],[94,97],[96,99],[98,101],[100,103],[102,105],[104,107],[106,109],
-  [108,111],[110,113],[112,115],[114,117],[116,119],[118,121],[120,123],[122,125],
-  [124,127],[126,129],[128,131],[130,133],[132,135],
-  [134,138],[136,140],[138,142],[140,144],[142,146],[144,148],
-  [146,150],[148,152],[150,155],[152,157],[154,159],[156,161],
-  [158,163],[160,165],[162,167],[164,169],[166,171],[168,173],
-  [170,175],[172,177],[174,179],[176,181],[178,183],[180,185],
-  [182,187],[184,190],[186,192],[188,194],[190,196],[192,198],[194,200],
-];
+function generateDynamicPairs(low, high, spread = 2) {
+  const pairs = [];
+  for (let buy = low; buy < high; buy += spread) {
+    const sell = buy + spread;
+    if (sell <= high + spread) { // allow slight over for flexibility
+      pairs.push([buy, sell]);
+    }
+  }
+  return pairs;
+}
+
+const PAIRS = generateDynamicPairs(DEFAULT_GRID_RANGE_LOW, DEFAULT_GRID_RANGE_HIGH);
 
 const BUY_TO_SELL = new Map(PAIRS.map(([b, s]) => [b, s]));
 const SELL_TO_BUY = new Map(PAIRS.map(([b, s]) => [s, b]));
-const PAIR_BUY_MIN = Math.min(...PAIRS.map(([b]) => b));
-const PAIR_BUY_MAX = Math.max(...PAIRS.map(([b]) => b));
+const PAIR_BUY_MIN = 40; // Fixed min for safety
+const PAIR_BUY_MAX = 200; // Fixed max for safety
+
+// Function to update pair maps when range changes
+function updatePairMaps(low, high) {
+  const dynamicPairs = generateDynamicPairs(low, high);
+  BUY_TO_SELL.clear();
+  SELL_TO_BUY.clear();
+  for (const [b, s] of dynamicPairs) {
+    BUY_TO_SELL.set(b, s);
+    SELL_TO_BUY.set(s, b);
+  }
+  // Update min/max if needed, but for now keep static
+}
 
 export default {
   async fetch(request, env) {
@@ -1358,6 +1369,7 @@ function syncRangeToPrice(st, last) {
 
   st.gridRangeLow = newLow;
   st.gridRangeHigh = newHigh;
+  updatePairMaps(newLow, newHigh); // Update pair maps for new range
   return true;
 }
 
@@ -1985,14 +1997,14 @@ function seedInitialPairStates(st) {
   ensureStateShape(st);
   const assumed = Math.round(st.assumedEntryPrice || ASSUMED_ENTRY_PRICE_DEFAULT);
   const obj = {};
-  for (const [buyP] of PAIRS) {
+  for (const buyP of BUY_TO_SELL.keys()) {
     obj[String(buyP)] = defaultPairSide(buyP, assumed);
   }
   st.pairSide = obj;
 }
 
 function formatPairStateDetail(st) {
-  return PAIRS.map(([b,s]) => {
+  return Array.from(BUY_TO_SELL.entries()).map(([b,s]) => {
     const side = st.pairSide?.[String(b)] || defaultPairSide(b, st.assumedEntryPrice);
     const lb = isBuyLocked(st, b) ? " [LOCK BUY]" : "";
     const ls = isSellLocked(st, s) ? " [LOCK SELL]" : "";
@@ -2032,7 +2044,7 @@ function fmtQty(n) {
 }
 
 function findNearestAllowedBuy(lastPrice) {
-  const candidates = PAIRS.map(x => x[0]);
+  const candidates = Array.from(BUY_TO_SELL.keys());
   let best = 0;
   let bestDist = Infinity;
   for (const p of candidates) {
@@ -2046,7 +2058,7 @@ function findNearestAllowedBuy(lastPrice) {
 }
 
 function findNearestAllowedSell(lastPrice) {
-  const candidates = PAIRS.map(x => x[1]);
+  const candidates = Array.from(SELL_TO_BUY.keys());
   let best = 0;
   let bestDist = Infinity;
   for (const p of candidates) {
